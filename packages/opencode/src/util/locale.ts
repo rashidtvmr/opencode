@@ -58,6 +58,14 @@ export function duration(input: number) {
   return `${days}d ${hours}h`
 }
 
+export function clock(use24h: boolean): string {
+  const date = new Date()
+  if (use24h) {
+    return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })
+  }
+  return date.toLocaleTimeString(undefined, { timeStyle: "short" })
+}
+
 export function truncate(str: string, len: number): string {
   if (str.length <= len) return str
   return str.slice(0, len - 1) + "…"

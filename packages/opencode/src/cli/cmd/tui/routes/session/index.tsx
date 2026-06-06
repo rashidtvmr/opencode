@@ -7,6 +7,7 @@ import {
   For,
   Match,
   on,
+  onCleanup,
   onMount,
   Show,
   Switch,
@@ -103,6 +104,9 @@ const context = createContext<{
   conceal: () => boolean
   showThinking: () => boolean
   showTimestamps: () => boolean
+  showClock: () => boolean
+  clockUse24h: () => boolean
+  clockText: () => string
   showDetails: () => boolean
   showGenericToolOutput: () => boolean
   diffWrapMode: () => "word" | "none"
@@ -166,6 +170,16 @@ export function Session() {
   const [diffWrapMode] = kv.signal<"word" | "none">("diff_wrap_mode", "word")
   const [_animationsEnabled, _setAnimationsEnabled] = kv.signal("animations_enabled", true)
   const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
+  const [showClock, setShowClock] = kv.signal("show_clock", false)
+  const [clockUse24h, setClockUse24h] = kv.signal("clock_24h", false)
+  const [clockValue, setClockValue] = createSignal(Date.now())
+
+  onMount(() => {
+    const timer = setInterval(() => setClockValue(Date.now()), 1000)
+    onCleanup(() => clearInterval(timer))
+  })
+
+  const clockText = createMemo(() => Locale.clock(clockUse24h()))
 
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
@@ -174,7 +188,7 @@ export function Session() {
     if (sidebar() === "auto" && wide()) return true
     return false
   })
-  const showTimestamps = createMemo(() => timestamps() === "show")
+  const showTimestamps = createMemo(() => timestamps() === "show" && !showClock())
   const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() ? 42 : 0) - 4)
   const providers = createMemo(() => Model.index(sync.data.provider))
 
@@ -643,6 +657,32 @@ export function Session() {
       },
     },
     {
+      title: showClock() ? "Hide clock" : "Show clock",
+      value: "session.toggle.clock",
+      category: "System",
+      slash: {
+        name: "clock",
+        aliases: ["toggle-clock"],
+      },
+      onSelect: (dialog) => {
+        setShowClock((prev) => !prev)
+        dialog.clear()
+      },
+    },
+    {
+      title: clockUse24h() ? "12-hour format" : "24-hour format",
+      value: "session.toggle.clock_format",
+      category: "System",
+      slash: {
+        name: "clock-format",
+        aliases: ["clock-toggle-format"],
+      },
+      onSelect: (dialog) => {
+        setClockUse24h((prev) => !prev)
+        dialog.clear()
+      },
+    },
+    {
       title: showThinking() ? "Hide thinking" : "Show thinking",
       value: "session.toggle.thinking",
       keybind: "display_thinking",
@@ -1047,6 +1087,9 @@ export function Session() {
         conceal,
         showThinking,
         showTimestamps,
+        showClock,
+        clockUse24h,
+        clockText,
         showDetails,
         showGenericToolOutput,
         diffWrapMode,
@@ -1201,7 +1244,16 @@ export function Session() {
                       toBottom()
                     }}
                     sessionID={route.sessionID}
-                    right={<TuiPluginRuntime.Slot name="session_prompt_right" session_id={route.sessionID} />}
+                    right={
+                      <>
+                        <TuiPluginRuntime.Slot name="session_prompt_right" session_id={route.sessionID} />
+                        <Show when={showClock()}>
+                          <text fg={theme.textMuted}>
+                            <span style={{ fg: theme.textMuted, paddingRight: 1 }}>{clockText()}</span>
+                          </text>
+                        </Show>
+                      </>
+                    }
                   />
                 </TuiPluginRuntime.Slot>
               </Show>
@@ -1270,7 +1322,7 @@ function UserMessage(props: {
   const queued = createMemo(() => props.pending && props.message.id > props.pending)
   const color = createMemo(() => local.agent.color(props.message.agent))
   const queuedFg = createMemo(() => selectedForeground(theme, color()))
-  const metadataVisible = createMemo(() => queued() || ctx.showTimestamps())
+  const metadataVisible = createMemo(() => queued() || ctx.showTimestamps() || ctx.showClock())
 
   const compaction = createMemo(() => props.parts.find((x) => x.type === "compaction"))
 
@@ -1321,12 +1373,26 @@ function UserMessage(props: {
             <Show
               when={queued()}
               fallback={
-                <Show when={ctx.showTimestamps()}>
-                  <text fg={theme.textMuted}>
-                    <span style={{ fg: theme.textMuted }}>
-                      {Locale.todayTimeOrDateTime(props.message.time.created)}
-                    </span>
-                  </text>
+                <Show when={ctx.showTimestamps() || ctx.showClock()}>
+                  <box flexDirection="row">
+                    <Show when={ctx.showTimestamps()}>
+                      <text fg={theme.textMuted}>
+                        <span style={{ fg: theme.textMuted }}>
+                          {Locale.todayTimeOrDateTime(props.message.time.created)}
+                        </span>
+                      </text>
+                    </Show>
+                    <box flexGrow={1} />
+                    <Show when={ctx.showClock()}>
+                      <box paddingRight={1}>
+                        <text fg={theme.textMuted}>
+                          <span style={{ fg: theme.textMuted }}>
+                            {ctx.clockText()}
+                          </span>
+                        </text>
+                      </box>
+                    </Show>
+                  </box>
                 </Show>
               }
             >
@@ -1414,26 +1480,33 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
       <Switch>
         <Match when={props.last || final() || props.message.error?.name === "MessageAbortedError"}>
           <box paddingLeft={3}>
-            <text marginTop={1}>
-              <span
-                style={{
-                  fg:
-                    props.message.error?.name === "MessageAbortedError"
-                      ? theme.textMuted
-                      : local.agent.color(props.message.agent),
-                }}
-              >
-                ▣{" "}
-              </span>{" "}
-              <span style={{ fg: theme.text }}>{Locale.titlecase(props.message.mode)}</span>
-              <span style={{ fg: theme.textMuted }}> · {model()}</span>
-              <Show when={duration()}>
-                <span style={{ fg: theme.textMuted }}> · {Locale.duration(duration())}</span>
+            <box marginTop={1} flexDirection="row" justifyContent="space-between">
+              <text>
+                <span
+                  style={{
+                    fg:
+                      props.message.error?.name === "MessageAbortedError"
+                        ? theme.textMuted
+                        : local.agent.color(props.message.agent),
+                  }}
+                >
+                  ▣{" "}
+                </span>{" "}
+                <span style={{ fg: theme.text }}>{Locale.titlecase(props.message.mode)}</span>
+                <span style={{ fg: theme.textMuted }}> · {model()}</span>
+                <Show when={duration()}>
+                  <span style={{ fg: theme.textMuted }}> · {Locale.duration(duration())}</span>
+                </Show>
+                <Show when={props.message.error?.name === "MessageAbortedError"}>
+                  <span style={{ fg: theme.textMuted }}> · interrupted</span>
+                </Show>
+              </text>
+              <Show when={ctx.showClock() && props.message.time.completed}>
+                <text fg={theme.textMuted}>
+                  <span style={{ fg: theme.textMuted, paddingRight: 1 }}>{ctx.clockText()}</span>
+                </text>
               </Show>
-              <Show when={props.message.error?.name === "MessageAbortedError"}>
-                <span style={{ fg: theme.textMuted }}> · interrupted</span>
-              </Show>
-            </text>
+            </box>
           </box>
         </Match>
       </Switch>
